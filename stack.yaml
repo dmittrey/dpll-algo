@@ -1,0 +1,8 @@
+snapshot:
+  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/24/13.yaml
+
+packages:
+- .
+
+extra-deps:
+  - parse-dimacs-1.3@sha256:6b6a975360e0be21e694ec4a610a4b1645853acae29ee927902a427d340047f0,1427

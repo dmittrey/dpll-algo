@@ -1,7 +1,7 @@
 module Solver (satSolve) where
 
 import Data.Array.Unboxed (listArray, elems)
--- import Debug.Trace (traceShow, traceShowId)
+import Debug.Trace (trace)
 
 import Language.CNF.Parse.ParseDIMACS
 
@@ -16,13 +16,20 @@ data SatResult
     | UNSAT
   deriving (Eq, Ord, Show, Read)
 
+-- фильтруем тривиальные клоузы: если в клоузе есть и x, и -x, то она всегда истинна
+preprocess :: [Clause] -> [Clause]
+preprocess = filter (\cl ->
+    let lits = elems cl
+    in all (\l -> not ((-l) `elem` lits)) lits)
+
 satSolve :: CNF -> (SatResult, Model)
 satSolve cnf =
-    let cls = clauses cnf
-    in runState (solveClauses cls 0) Map.empty
+    let cls = preprocess (clauses cnf)
+    in runState (solveClauses 0 cls 0) Map.empty
 
-solveClauses :: [Clause] -> Int -> Solver SatResult
-solveClauses cls lit
+-- добавил depth :: Int
+solveClauses :: Int -> [Clause] -> Int -> Solver SatResult
+solveClauses depth cls lit
     | null cls = return SAT
     | any (null . elems) cls = return UNSAT
     | otherwise = do
@@ -47,11 +54,25 @@ solveClauses cls lit
                 []    -> 0
                 (x:_) -> abs x
 
+        -- Лог: глубина, литерал, статистика
+        let ucls = unitClauses cls''
+            dbg = "[depth=" ++ show depth ++ "] lit=" ++ show lit ++
+                  " #cls(before)=" ++ show (length cls) ++
+                  " #cls(after)="  ++ show (length cls'') ++
+                  " unit=" ++ show ucls ++
+                  " pure=" ++ show pureLits ++
+                  " next=" ++ show (take 4 (remainingLits))
+        trace dbg (return ())
+
         -- 5) След литерал
-        res <- solveClauses cls'' nextLiteral
-        case res of
-            SAT   -> return SAT
-            UNSAT -> solveClauses cls'' (-nextLiteral)
+        if nextLiteral == 0
+            then return SAT
+            else do
+                oldModel <- get          -- сохранили текущее состояние
+                res <- solveClauses (depth+1) cls'' nextLiteral
+                case res of
+                    SAT -> return SAT
+                    UNSAT -> put oldModel >> solveClauses (depth+1) cls'' (-nextLiteral)
 
 
 -- eliminatePureLiteral S l
@@ -92,24 +113,16 @@ assignLiteral lit =
     in 
         modify (Map.insert var val)
 
--- Последовательный обход всех unit-клоуз
 unitStep :: [Clause] -> [Int] -> Solver [Clause]
 unitStep cls [] = return cls
 unitStep cls (l:ls) = do
-    -- 1) продвигаем через unitPropagate
     let cls' = unitPropagate cls l
-    -- 2) записываем литерал в модель
     assignLiteral l
-    -- продолжаем с оставшимися unit-клозами
     unitStep cls' ls
 
--- Последовательный обход всех unit-клоуз
 elimStep :: [Clause] -> [Int] -> Solver [Clause]
 elimStep cls [] = return cls
 elimStep cls (l:ls) = do
-    -- 1) продвигаем через eliminatePureLiteral
     let cls' = eliminatePureLiteral cls l
-    -- 2) записываем литерал в модель
     assignLiteral l
-    -- продолжаем с оставшимися unit-клозами
     elimStep cls' ls

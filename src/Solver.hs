@@ -1,7 +1,6 @@
 module Solver (satSolve) where
 
 import Data.Array.Unboxed (listArray, elems)
-import Debug.Trace (trace)
 
 import Language.CNF.Parse.ParseDIMACS
 
@@ -34,11 +33,12 @@ solveClauses depth cls lit
     | any (null . elems) cls = return UNSAT
     | otherwise = do
         -- 0) назначаем литерал
+        let cls0 = if lit /= 0 then unitPropagate cls lit else cls
         if lit /= 0 then assignLiteral lit else return ()
 
         -- 1) Обрабатываем unit clauses
-        let lits = unitClauses cls
-        cls' <- unitStep cls lits
+        let lits = unitClauses cls0
+        cls' <- unitStep cls0 lits
 
         -- 2) Находим чистые литералы
         let allLits = concatMap elems cls'
@@ -54,21 +54,14 @@ solveClauses depth cls lit
                 []    -> 0
                 (x:_) -> abs x
 
-        -- Лог: глубина, литерал, статистика
-        let ucls = unitClauses cls''
-            dbg = "[depth=" ++ show depth ++ "] lit=" ++ show lit ++
-                  " #cls(before)=" ++ show (length cls) ++
-                  " #cls(after)="  ++ show (length cls'') ++
-                  " unit=" ++ show ucls ++
-                  " pure=" ++ show pureLits ++
-                  " next=" ++ show (take 4 (remainingLits))
-        trace dbg (return ())
-
         -- 5) След литерал
         if nextLiteral == 0
-            then return SAT
+            -- FIXUP
+            -- Вот тут я всегда возвращал SAT, но что если у нас после пропагирования пустая клоза в массиве, 
+            -- нужно тогда вернуть UNSAT, поэтому вызываю еще раз функцию чтобы пробежали два первых условных оператора
+            then solveClauses depth cls'' 0   -- ← повторно прогоняем гварды: null/empty-clause
             else do
-                oldModel <- get          -- сохранили текущее состояние
+                oldModel <- get          -- сохранили текущее состояние (чтобы вернуть модель без заассайненной переменной)
                 res <- solveClauses (depth+1) cls'' nextLiteral
                 case res of
                     SAT -> return SAT
@@ -94,7 +87,7 @@ unitPropagate cls prop =
     [ listArray (0, length newProps - 1) newProps
     | cl <- cls
     , let props    = elems cl
-    , not (prop `elem` props)                -- удалить клоузы с prop
+    , not (prop `elem` props)
     , let newProps = filter (/= (-prop)) props
     ]
 

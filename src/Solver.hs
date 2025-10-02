@@ -1,38 +1,115 @@
 module Solver (satSolve) where
 
-import Data.Array.Unboxed (indices)
+import Data.Array.Unboxed (listArray, elems)
+-- import Debug.Trace (traceShow, traceShowId)
 
 import Language.CNF.Parse.ParseDIMACS
+
+import Control.Monad.State
+import qualified Data.Map.Strict as Map
+
+type Model = Map.Map Int Bool
+type Solver a = State Model a
 
 data SatResult 
     = SAT
     | UNSAT
   deriving (Eq, Ord, Show, Read)
 
-satSolve :: CNF -> SatResult
+satSolve :: CNF -> (SatResult, Model)
 satSolve cnf =
     let cls = clauses cnf
-    in solveClauses cls
+    in runState (solveClauses cls 0) Map.empty
 
-solveClauses :: [Clause] -> SatResult
+solveClauses :: [Clause] -> Int -> Solver SatResult
+solveClauses cls lit
+    | null cls = return SAT
+    | any (null . elems) cls = return UNSAT
+    | otherwise = do
+        -- 0) назначаем литерал
+        if lit /= 0 then assignLiteral lit else return ()
 
--- (1) if S = empty => return Sat
-solveClauses [] = SAT
+        -- 1) Обрабатываем unit clauses
+        let lits = unitClauses cls
+        cls' <- unitStep cls lits
 
--- (2) [] ∈ S => return Unsat
-solveClauses cls
-    | any (null . indices) cls = UNSAT
-    | otherwise                = SAT
+        -- 2) Находим чистые литералы
+        let allLits = concatMap elems cls'
+            litCounts = Map.fromListWith (+) [(l, 1 :: Int) | l <- allLits]
+            pureLits = [ l | l <- Map.keys litCounts, Map.notMember (-l) litCounts ]
 
--- TODO 
--- # (3) Если нашли unit клозу, то
-            -- # 1 - Выпишем контрарную проп переменную из всех остальных клоз
-            -- # 2 - Подставим в проп переменную зн-е 1(чтобы эту клозу удовлетворить) 
+        -- 3) Подставляем чистые литералы
+        cls'' <- elimStep cls' pureLits
 
--- # (4) Если нашли чистый литерал который входит в клозы без контрарной пары в других
+        -- 4) Выбираем следующий литерал
+        let remainingLits = concatMap elems cls''
+            nextLiteral = case remainingLits of
+                []    -> 0
+                (x:_) -> abs x
+
+        -- 5) След литерал
+        res <- solveClauses cls'' nextLiteral
+        case res of
+            SAT   -> return SAT
+            UNSAT -> solveClauses cls'' (-nextLiteral)
 
 
--- # 1 - Убираем клозы с чистыми литералами
-        --   # 2 - Подставим в чистый литерал зн-е 1(чтобы эти клозы удовлетворить)
+-- eliminatePureLiteral S l
+-- Фильтруем набор клоз для дальнейшего разбора алгоритмом
+--      Если клоза содержит литерал, то считаем её истинной и вычеркиваем из рассматриваемых
+eliminatePureLiteral :: [Clause] -> Int -> [Clause]
 
+-- # Iterate over all clauses and delete with pure_prop
+eliminatePureLiteral cls prop =
+    [ cl | cl <- cls, not (prop `elem` elems cl) ]
 
+-- unitPropagate S prop
+-- Продвигаем prop в каждую клозу:
+--      Если клоза не содержит prop, то надо почистить !prop, тк он ложен
+unitPropagate :: [Clause] -> Int -> [Clause]
+
+-- # Iterate over all clauses and delete not(prop_cl)
+unitPropagate cls prop =
+    [ listArray (0, length newProps - 1) newProps
+    | cl <- cls
+    , let props    = elems cl
+    , not (prop `elem` props)                -- удалить клоузы с prop
+    , let newProps = filter (/= (-prop)) props
+    ]
+
+unitClauses :: [Clause] -> [Int]
+unitClauses cls =
+    [ x
+    | cl <- cls
+    , let lits = elems cl
+    , [x] <- [lits]
+    ]
+
+assignLiteral :: Int -> Solver ()
+assignLiteral lit =
+    let var = abs lit
+        val = lit > 0
+    in 
+        modify (Map.insert var val)
+
+-- Последовательный обход всех unit-клоуз
+unitStep :: [Clause] -> [Int] -> Solver [Clause]
+unitStep cls [] = return cls
+unitStep cls (l:ls) = do
+    -- 1) продвигаем через unitPropagate
+    let cls' = unitPropagate cls l
+    -- 2) записываем литерал в модель
+    assignLiteral l
+    -- продолжаем с оставшимися unit-клозами
+    unitStep cls' ls
+
+-- Последовательный обход всех unit-клоуз
+elimStep :: [Clause] -> [Int] -> Solver [Clause]
+elimStep cls [] = return cls
+elimStep cls (l:ls) = do
+    -- 1) продвигаем через eliminatePureLiteral
+    let cls' = eliminatePureLiteral cls l
+    -- 2) записываем литерал в модель
+    assignLiteral l
+    -- продолжаем с оставшимися unit-клозами
+    elimStep cls' ls
